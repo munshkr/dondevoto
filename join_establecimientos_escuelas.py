@@ -107,6 +107,15 @@ def match_persister():
             })
         persist_queue.task_done()
 
+def get_close_matches(e, col, col_escuelas):
+    match_in = { canon(i[col_escuelas]): i
+                 for i in escuelas_in_distrito(e['dne_seccion_id'],
+                                               e['dne_distrito_id'])
+                 if i[col_escuelas] }
+    _matches = get_close_matches_with_score(canon(e[col]), match_in.keys(), 5, 0.5)
+    return [(score, match_in[result]) for score, result in _matches]
+
+
 def do_match():
     total_establecimientos = len(dine_estab)
     log('TOTAL: %s' % total_establecimientos)
@@ -127,23 +136,27 @@ def do_match():
 
         current_item += 1
 
+        matches = []
 
-        canon_func = lambda est: canon("%(nombre)s%(ndomiciio)s") % { str(k):v for k,v in est.iteritems() }
-        match_in = { canon_func(i): i
-                     for i in escuelas_in_distrito(e['dne_seccion_id'],
-                                                   e['dne_distrito_id']) }
+        # Get best matches per key
+        ns = []
+        ns.extend({ 'key': 'nombre', 'score': s, 'est': e }
+                  for s, e in get_close_matches(e, u'establecimiento', u'nombre'))
+        ns.extend({ 'key': 'direccion', 'score': s, 'est': e }
+                  for s, e in get_close_matches(e, u'direccion', u'ndomiciio'))
 
-        _matches = get_close_matches_with_score(canon_func({'nombre': e[u'establecimiento'],
-                                                            'ndomiciio': e[u'direccion']}),
-                                                match_in.keys(),
-                                                5,
-                                                0.5)
+        from itertools import groupby
 
-        matches += [(score * coeff, match_in[result]) for score, result in _matches]
+        # Group all matches by school (GUID), and calculate weighted mean of score
+        weigths = { 'nombre': 0.4, 'direccion': 0.6 }
+        for _, ms in groupby(ns, lambda n: n['est'][u'gid']):
+            ms = list(ms)
+            fs = sum(m['score'] * weigths[m['key']] for m in ms) / sum(weigths[m['key']] for m in ms)
+            matches.append((fs, ms[0]['est']))
 
-        # log('Matching "%s - %s (%s)"' % (e['establecimiento'], e['direccion'], e['localidad']))
-        # for m in matches:
-        #     log('\t%.2f %s - %s (%s)' % (m[0], m[1]['nombre'], m[1]['ndomiciio'], m[1]['localidad']))
+        #log('Matching "%s - %s (%s)"' % (e['establecimiento'], e['direccion'], e['localidad']))
+        #for m in sorted(matches, key=lambda (s,_): s, reverse=True):
+            #log('\t%.2f %s - %s (%s)' % (m[0], m[1]['nombre'], m[1]['ndomiciio'], m[1]['localidad']))
 
         persist_queue.put((e, matches))
 
